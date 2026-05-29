@@ -9,7 +9,7 @@ export const UNIT_TYPES = {
     startEnergy: 2,
     regen: 1,
     moveRange: 2,
-    role: "杂兵 / 占点 / 卡位",
+    role: "占点 / 卡位",
     visual: "grunt",
     color: "#3f774d",
     skill: null,
@@ -48,7 +48,7 @@ export const UNIT_TYPES = {
     hp: 3,
     energy: 3,
     startEnergy: 3,
-    regen: 2,
+    regen: 1,
     moveRange: 2,
     role: "中费突破",
     visual: "strike",
@@ -74,7 +74,7 @@ export const UNIT_TYPES = {
     hp: 5,
     energy: 5,
     startEnergy: 5,
-    regen: 2,
+    regen: 1,
     moveRange: 2,
     role: "范围压制",
     visual: "aoe",
@@ -85,10 +85,10 @@ export const UNIT_TYPES = {
     skill: {
       id: "salvo",
       name: "全炮门齐射",
-      cost: 4,
+      cost: 3,
       range: 3,
       damage: 2,
-      text: "选择一个地块判定方向，对该方向3x3格内所有机体造成2点伤害。可以空放。"
+      text: "选择一个方向，对该方向3x3格内所有机体造成2点伤害。可以空放。"
     },
     text: "高费范围压制核心。能清理密集阵线，但存在误伤风险。"
   },
@@ -100,7 +100,7 @@ export const UNIT_TYPES = {
     hp: 4,
     energy: 4,
     startEnergy: 4,
-    regen: 2,
+    regen: 1,
     moveRange: 3,
     role: "高机动近战",
     visual: "melee",
@@ -111,10 +111,11 @@ export const UNIT_TYPES = {
     skill: {
       id: "justice_chain",
       name: "破阵追击",
+      cost: 1,
       passive: true,
-      text: "普攻击破单位后，本回合获得一次额外移动和普攻机会。每回合限一次。"
+      text: "普攻击破单位后，若有EN，消耗1EN并重置移动与普攻。本回合可重复触发。"
     },
-    text: "高机动近战核心。移动距离为3，适合击破后继续压迫阵线。"
+    text: "高机动近战核心。移动距离为3，依靠EN连续破阵。"
   }
 };
 

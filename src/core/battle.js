@@ -8,11 +8,41 @@ export const BOARD = {
   moveRange: 2,
   coreMoveRange: 1,
   obstacleCount: 10,
-  handLimit: 7
 };
 
 export const POINT_ROWS = [5, 6, 7];
 export const CENTER_COLUMN = 6;
+
+export const DIFFICULTY_PRESETS = {
+  easy: {
+    id: "easy",
+    name: "简单",
+    pointRowOffset: 0,
+    enemyCoreEnergy: 2,
+    enemyScore: 0
+  },
+  normal: {
+    id: "normal",
+    name: "普通",
+    pointRowOffset: -1,
+    enemyCoreEnergy: 4,
+    enemyScore: 3
+  },
+  hard: {
+    id: "hard",
+    name: "困难",
+    pointRowOffset: -2,
+    enemyCoreEnergy: 5,
+    enemyScore: 6
+  }
+};
+
+export const OBSTACLE_PRESETS = {
+  light: { id: "light", name: "少量", count: 6 },
+  standard: { id: "standard", name: "标准", count: 10 },
+  dense: { id: "dense", name: "密集", count: 14 },
+  heavy: { id: "heavy", name: "极密", count: 18 }
+};
 
 export const SIDE_NAME = {
   player: "玩家",
@@ -79,8 +109,10 @@ export function deploymentCellsForCore(core) {
 }
 
 export class BattleGame {
-  constructor({ random = Math.random } = {}) {
+  constructor({ random = Math.random, difficulty = "easy", obstacleCount = BOARD.obstacleCount } = {}) {
     this.random = random;
+    this.difficulty = DIFFICULTY_PRESETS[difficulty] ?? DIFFICULTY_PRESETS.easy;
+    this.obstacleCount = Math.max(0, Math.min(36, Number(obstacleCount) || BOARD.obstacleCount));
     this.listeners = new Set();
     this.cardCounter = 1;
     this.unitCounter = 1;
@@ -103,6 +135,7 @@ export class BattleGame {
       player: this.createCore("player"),
       enemy: this.createCore("enemy")
     };
+    this.applyDifficultyToCores(cores);
     const strategicPoints = this.generateStrategicPoints(cores);
     const energyZones = this.generateEnergyZones(strategicPoints);
     this.state = {
@@ -121,9 +154,18 @@ export class BattleGame {
       },
       log: []
     };
+    this.applyDifficultyToFactions();
     this.beginTurn("player", { opening: true });
     this.addLog("第1回合：玩家行动。选择机体后主动移动、普攻或释放技能。");
     this.notify({ type: "reset" });
+  }
+
+  applyDifficultyToCores(cores) {
+    cores.enemy.energy = Math.min(cores.enemy.baseEnergy, this.difficulty.enemyCoreEnergy);
+  }
+
+  applyDifficultyToFactions() {
+    this.state.factions.enemy.score = this.difficulty.enemyScore;
   }
 
   createCore(side) {
@@ -139,7 +181,7 @@ export class BattleGame {
       hp: BOARD.coreHp,
       maxHp: BOARD.coreHp,
       baseEnergy: 5,
-      energy: 5,
+      energy: 2,
       regen: 1,
       moveRange: BOARD.coreMoveRange,
       moved: false,
@@ -173,13 +215,20 @@ export class BattleGame {
 
   generateStrategicPoints(cores) {
     const candidates = [];
-    for (const y of POINT_ROWS) {
+    const rows = this.pointRows();
+    for (const y of rows) {
       for (let x = 2; x < BOARD.width - 2; x += 1) {
         const cell = { x, y };
         if (!sameCell(cell, cores.player) && !sameCell(cell, cores.enemy)) candidates.push(cell);
       }
     }
     return this.pickCells(candidates, 3);
+  }
+
+  pointRows() {
+    return POINT_ROWS
+      .map((row) => Math.max(1, Math.min(BOARD.height - 2, row + this.difficulty.pointRowOffset)))
+      .filter((row, index, rows) => rows.indexOf(row) === index);
   }
 
   generateEnergyZones(points) {
@@ -224,14 +273,14 @@ export class BattleGame {
     }
 
     let guard = 0;
-    while (picked.length < BOARD.obstacleCount && guard < 300) {
+    while (picked.length < this.obstacleCount && guard < 300) {
       guard += 1;
       const seed = this.pickCentralObstacleSeed(seedCandidates, picked, protectedCells);
       if (!seed) break;
       const cluster = [seed];
       picked.push(seed);
       const clusterSize = 1 + Math.floor(this.random() * 3);
-      while (cluster.length < clusterSize && picked.length < BOARD.obstacleCount) {
+      while (cluster.length < clusterSize && picked.length < this.obstacleCount) {
         const base = cluster[Math.floor(this.random() * cluster.length)];
         const directions = Object.values(DIRECTIONS).slice().sort(() => this.random() - 0.5);
         const next = directions
@@ -242,7 +291,7 @@ export class BattleGame {
         picked.push(next);
       }
     }
-    return picked.slice(0, BOARD.obstacleCount);
+    return picked.slice(0, this.obstacleCount);
   }
 
   pickCentralObstacleSeed(candidates, picked, protectedCells) {
@@ -295,8 +344,7 @@ export class BattleGame {
       actor.waiting = false;
       actor.moved = false;
       actor.acted = false;
-      actor.justiceChainUsed = false;
-      this.restoreEnergy(actor);
+      if (!opening) this.restoreEnergy(actor);
     }
     if (!opening) this.addLog(`${SIDE_NAME[side]}回合开始。`);
     this.notify({ type: "turn-start", side });
@@ -331,7 +379,12 @@ export class BattleGame {
   restoreEnergy(actor) {
     const max = this.effectiveMaxEnergy(actor);
     const regen = actor.type === "core" ? this.coreRegenAmount(actor) : (actor.regen ?? 1);
-    actor.energy = Math.min(max, (actor.energy ?? 0) + regen);
+    const before = actor.energy ?? 0;
+    actor.energy = Math.min(max, before + regen);
+    const gained = actor.energy - before;
+    if (gained > 0) {
+      this.notify({ type: "energy", x: actor.x, y: actor.y, amount: gained, target: actor.id });
+    }
   }
 
   coreRegenAmount(core) {
@@ -570,18 +623,18 @@ export class BattleGame {
     actor.acted = true;
     this.addLog(`${SIDE_NAME[side]} ${actor.name} 普攻 ${actualTarget.name}。`);
     this.notifyAttack(actor, actualTarget, "hit");
-    this.applyDamage(actualTarget, actor.attack, actor.name);
+    this.applyDamage(actualTarget, actor.attack, actor);
     this.afterAction();
     if (willKillUnit) this.tryGrantJusticeChain(actor);
     return true;
   }
 
   tryGrantJusticeChain(actor) {
-    if (!actor || actor.type !== "justice" || actor.justiceChainUsed || !this.getUnit(actor.id)) return false;
-    actor.justiceChainUsed = true;
+    if (!actor || actor.type !== "justice" || !this.getUnit(actor.id) || (actor.energy ?? 0) < 1) return false;
+    actor.energy -= 1;
     actor.moved = false;
     actor.acted = false;
-    this.addLog(`${actor.name} 触发破阵追击：获得一次额外移动和普攻机会。`);
+    this.addLog(`${actor.name} 触发破阵追击：消耗1EN，获得额外移动和普攻机会。`);
     this.notify({ type: "extra-action", actorId: actor.id, side: actor.side });
     return true;
   }
@@ -648,7 +701,7 @@ export class BattleGame {
     actor.acted = true;
     this.addLog(`${SIDE_NAME[side]} ${actor.name} 使用${skill.name}。`);
     this.notifyAttack(actor, actualTarget, skill.id);
-    this.applyDamage(actualTarget, skill.damage, actor.name);
+    this.applyDamage(actualTarget, skill.damage, actor);
     this.afterAction();
     return true;
   }
@@ -701,7 +754,7 @@ export class BattleGame {
       effect: "positron",
       skillName: skill.name
     });
-    for (const { target: item, amount } of damaged) this.applyDamage(item, amount, actor.name);
+    for (const { target: item, amount } of damaged) this.applyDamage(item, amount, actor);
     this.afterAction();
     return true;
   }
@@ -723,7 +776,7 @@ export class BattleGame {
       effect: "salvo",
       skillName: skill.name
     });
-    for (const unit of targets) this.applyDamage(unit, skill.damage, actor.name);
+    for (const unit of targets) this.applyDamage(unit, skill.damage, actor);
     this.afterAction();
     return true;
   }
@@ -806,8 +859,14 @@ export class BattleGame {
     });
   }
 
-  applyDamage(target, amount, sourceName) {
+  applyDamage(target, amount, source) {
+    const sourceName = typeof source === "string" ? source : source?.name ?? "攻击";
+    const sourceSide = typeof source === "string" ? null : source?.side ?? null;
     target.hp -= amount;
+    if (target.type !== "core" && amount > 0) {
+      target.lastDamagedBy = sourceSide;
+      target.lastDamagedByName = sourceName;
+    }
     this.trimEnergy(target);
     this.addLog(`${sourceName} 对 ${target.name} 造成 ${amount} 伤害。`);
     this.notify({ type: "damage", x: target.x, y: target.y, amount, target: target.id });
@@ -823,10 +882,20 @@ export class BattleGame {
     const defeated = this.state.units.filter((unit) => unit.hp <= 0);
     if (defeated.length === 0) return;
     for (const unit of defeated) {
+      this.awardKillScore(unit);
       this.addLog(`${SIDE_NAME[unit.side]} ${unit.name} 被击破。`);
-      this.notify({ type: "death", unitId: unit.id, x: unit.x, y: unit.y });
+      this.notify({ type: "death", unitId: unit.id, side: unit.side, name: unit.name, x: unit.x, y: unit.y });
     }
     this.state.units = this.state.units.filter((unit) => unit.hp > 0);
+  }
+
+  awardKillScore(unit) {
+    const scorer = unit.lastDamagedBy;
+    if (!scorer || scorer === unit.side || !this.state.factions[scorer]) return;
+    const value = unit.baseEnergy ?? getUnitType(unit.type)?.energy ?? 0;
+    if (value <= 0) return;
+    this.state.factions[scorer].score += value;
+    this.addLog(`${SIDE_NAME[scorer]}击破 ${unit.name}：+${value} 战略分。`);
   }
 
   resolveStrategicPoints(side) {

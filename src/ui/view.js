@@ -9,10 +9,11 @@ const SPEEDS = {
 };
 
 export class TacticalView {
-  constructor(game, root, { onEndTurn } = {}) {
+  constructor(game, root, { onEndTurn, onHome } = {}) {
     this.game = game;
     this.root = root;
     this.onEndTurn = onEndTurn;
+    this.onHome = onHome;
     this.pendingDeploy = null;
     this.selectedActorId = null;
     this.selectedAction = "move";
@@ -34,6 +35,7 @@ export class TacticalView {
     this.turnNoticeNode = null;
     this.turnNoticeTimer = null;
     this.zoomTimer = null;
+    this.tooltipTimer = null;
     this.moveAnimations = new Map();
     this.attackAnimations = new Map();
     this.hitAnimations = new Map();
@@ -79,6 +81,14 @@ export class TacticalView {
     this.updateStageTransform();
   }
 
+  resetCamera() {
+    this.viewportScale = 1;
+    this.panX = 0;
+    this.panY = 0;
+    this.triggerZoomEase();
+    this.updateStageTransform();
+  }
+
   async endPlayerTurn() {
     if (this.busy || this.game.state.activeSide !== "player" || this.game.state.winner) return;
     if (this.hasRemainingActions()) {
@@ -98,6 +108,10 @@ export class TacticalView {
 
   handleGameEvent(state, event = { type: "state" }) {
     const ttl = this.speedProfile().ttl;
+    if (event.type === "deploy") {
+      this.addDeployEffect(event.x, event.y, event.side);
+    }
+
     if (event.type === "move") {
       this.moveAnimations.set(event.actorId, this.animationRecord(event));
       this.expireAnimation(this.moveAnimations, event.actorId, ttl);
@@ -117,7 +131,7 @@ export class TacticalView {
       for (const cell of event.areaCells ?? []) this.addEffect(cell.x, cell.y, "area");
     }
 
-    if (event.type === "damage" || event.type === "heal") {
+    if (event.type === "damage" || event.type === "heal" || event.type === "energy") {
       const id = `${event.type}-${this.eventCounter++}`;
       this.damageEvents.push(this.animationRecord({
         id,
@@ -134,6 +148,10 @@ export class TacticalView {
         this.damageEvents = this.damageEvents.filter((item) => item.id !== id);
         this.render();
       }, ttl);
+    }
+
+    if (event.type === "death") {
+      this.addExplosion(event.x, event.y, event.side);
     }
 
     if (["turn-start", "winner", "reset"].includes(event.type)) {
@@ -167,7 +185,7 @@ export class TacticalView {
   }
 
   animationRecord(event) {
-    return { ...event, startedAt: performance.now(), duration: this.speedProfile().ttl };
+    return { ...event, startedAt: performance.now(), duration: event.duration ?? this.speedProfile().ttl };
   }
 
   animationDelay(event) {
@@ -195,12 +213,47 @@ export class TacticalView {
     }, this.speedProfile().ttl);
   }
 
+  addDeployEffect(x, y, side) {
+    const id = `deploy-${this.eventCounter++}`;
+    const ttl = Math.max(620, this.speedProfile().ttl * 0.72);
+    this.effectEvents.push(this.animationRecord({ id, x, y, kind: "deploy", side, duration: ttl }));
+    window.setTimeout(() => {
+      this.effectEvents = this.effectEvents.filter((item) => item.id !== id);
+      this.render();
+    }, ttl);
+  }
+
+  addExplosion(x, y, side = "enemy") {
+    const ttl = Math.max(900, this.speedProfile().ttl * 0.88);
+    const count = 7;
+    for (let index = 0; index < count; index += 1) {
+      const id = `explosion-${this.eventCounter++}`;
+      const angle = (Math.PI * 2 * index) / count + Math.random() * 0.55;
+      const radius = 0.08 + Math.random() * 0.32;
+      this.effectEvents.push(this.animationRecord({
+        id,
+        x,
+        y,
+        kind: "explosion",
+        side,
+        offsetX: Math.cos(angle) * radius,
+        offsetY: Math.sin(angle) * radius,
+        flareSize: 0.22 + Math.random() * 0.34,
+        sparkDelay: Math.round(index * 38 + Math.random() * 70),
+        duration: ttl
+      }));
+      window.setTimeout(() => {
+        this.effectEvents = this.effectEvents.filter((item) => item.id !== id);
+        this.render();
+      }, ttl + 360);
+    }
+  }
+
   render() {
     const state = this.game.state;
     this.root.innerHTML = `
       <main class="app-shell ${this.logCollapsed ? "log-collapsed" : ""} ${this.handCollapsed ? "dock-collapsed" : ""}">
         <section class="main-layout">
-          ${this.renderSideStats()}
           <section class="battlefield">
             ${this.renderBattleHud()}
             <div class="board-wrap">
@@ -222,39 +275,18 @@ export class TacticalView {
   renderBattleHud() {
     const player = this.game.state.factions.player;
     const enemy = this.game.state.factions.enemy;
-    const playerCore = this.game.state.cores.player;
-    const enemyCore = this.game.state.cores.enemy;
     return `
       <div class="battle-hud">
-        <div class="hud-block"><span>回合</span><b>${this.game.state.round}/${BOARD.maxRound}</b></div>
-        <div class="hud-block"><span>行动方</span><b>${this.activeSideLabel()}</b></div>
-        <div class="hud-block"><span>战略点</span><b>${this.renderPointDots()}</b></div>
-        <div class="hud-block"><span>战略分</span><b>${player.score} / ${enemy.score}</b></div>
-        <div class="hud-block"><span>母舰</span><b>${playerCore.hp}/${playerCore.maxHp} / ${enemyCore.hp}/${enemyCore.maxHp}</b></div>
-        <button class="theme-toggle" data-action="open-settings">设置</button>
+        <div class="hud-block"><span>&#22238;&#21512;</span><b>${this.game.state.round}/${BOARD.maxRound}</b></div>
+        <div class="hud-block"><span>&#34892;&#21160;&#26041;</span><b>${this.activeSideLabel()}</b></div>
+        <div class="hud-block"><span>&#25112;&#30053;&#28857;</span><b>${this.renderPointDots()}</b></div>
+        <div class="scoreboard">
+          <div class="score-card player"><span>&#29609;&#23478;&#25112;&#30053;&#20998;</span><b>${player.score}</b></div>
+          <div class="score-card enemy"><span>AI&#25112;&#30053;&#20998;</span><b>${enemy.score}</b></div>
+        </div>
+        <button class="theme-toggle" data-action="open-settings">&#35774;&#32622;</button>
       </div>
     `;
-  }
-
-  renderSideStats() {
-    const player = this.game.state.factions.player;
-    const enemy = this.game.state.factions.enemy;
-    return `
-      <aside class="side-stats">
-        <div class="side-stat-title">资源</div>
-        <div class="side-stat-row"><span>机库</span><b>${this.hangarTotal("player")}</b></div>
-        <div class="side-stat-row"><span>类型</span><b>${player.hangar.filter((item) => item.count > 0).length}</b></div>
-        <div class="side-stat-row"><span>母舰EN</span><b>${this.game.state.cores.player.energy}</b></div>
-        <div class="side-stat-title muted">AI</div>
-        <div class="side-stat-row enemy"><span>机库</span><b>${this.hangarTotal("enemy")}</b></div>
-        <div class="side-stat-row enemy"><span>类型</span><b>${enemy.hangar.filter((item) => item.count > 0).length}</b></div>
-        <div class="side-stat-row enemy"><span>母舰EN</span><b>${this.game.state.cores.enemy.energy}</b></div>
-      </aside>
-    `;
-  }
-
-  hangarTotal(side) {
-    return this.game.state.factions[side].hangar.reduce((sum, item) => sum + item.count, 0);
   }
 
   activeSideLabel() {
@@ -296,6 +328,8 @@ export class TacticalView {
           this.game.isDeployment("enemy", x, y) ? "deploy-enemy" : "",
           canDeploy ? "deploy-target" : "",
           target ? `${target.kind}-target action-target` : "",
+          target?.lethal ? "lethal-target" : "",
+          target?.danger ? "danger-target" : "",
           commandable ? "commandable" : "",
           selected ? "selected" : "",
           isAnimating ? "animating-cell" : ""
@@ -341,11 +375,7 @@ export class TacticalView {
           ${this.renderHpPips(unit)}
           ${this.renderEnergyPips(unit)}
         </div>
-        <div class="unit-tooltip">
-          <span class="tooltip-title">${type.name}</span>
-          <span class="tooltip-sub">攻 ${unit.attack} / HP ${Math.max(0, unit.hp)}/${unit.maxHp} / 能量 ${unit.energy}/${this.game.effectiveMaxEnergy(unit)}</span>
-          <span class="tooltip-sub">${type.skill ? `${type.skill.name}：${type.skill.text}` : "无技能"}</span>
-        </div>
+        ${this.renderActorTooltip(unit, type)}
       </div>
     `;
   }
@@ -364,14 +394,15 @@ export class TacticalView {
           ${this.renderHpPips(core, "core")}
           ${this.renderEnergyPips(core)}
         </div>
+        ${this.renderActorTooltip(core)}
       </div>
     `;
   }
 
   actorAnimationStyle(motion, attack, hit) {
     return [
-      motion ? `--dx:${motion.from.x - motion.to.x}` : "",
-      motion ? `--dy:${motion.from.y - motion.to.y}` : "",
+      motion ? `--move-x:calc(${motion.from.x - motion.to.x} * (var(--cell) + 1px))` : "",
+      motion ? `--move-y:calc(${motion.from.y - motion.to.y} * (var(--cell) + 1px))` : "",
       motion ? `--move-delay:${this.animationDelay(motion)}` : "",
       attack?.target ? `--attack-x:${Math.sign(attack.target.x - attack.from.x)}` : "--attack-x:0",
       attack?.target ? `--attack-y:${Math.sign(attack.target.y - attack.from.y)}` : "--attack-y:0",
@@ -403,6 +434,63 @@ export class TacticalView {
     `;
   }
 
+  renderActorTooltip(actor, type = null) {
+    const skills = this.game.getSkills(actor);
+    const role = actor.type === "core" ? "母舰核心 / 部署中心" : type?.role ?? "";
+    const skillText = skills.length
+      ? skills.map((skill) => {
+        const tag = skill.passive
+          ? `被动${skill.cost ? ` / ${skill.cost}EN` : ""}`
+          : `${skill.cost ?? 0}EN`;
+        return `${this.escape(skill.name)} / ${tag}：${this.escape(skill.text ?? "")}`;
+      }).join("<br>")
+      : "无技能";
+    return `
+      <div class="unit-tooltip info-tooltip">
+        <span class="tooltip-title">${this.escape(actor.name)}</span>
+        <span class="tooltip-sub">${this.escape(role)}</span>
+        <span class="tooltip-sub">攻击 ${actor.attack} / HP ${Math.max(0, actor.hp)}/${actor.maxHp} / EN ${actor.energy}/${this.game.effectiveMaxEnergy(actor)}</span>
+        <span class="tooltip-sub">${skillText}</span>
+      </div>
+    `;
+  }
+
+  renderSkillTooltip(skill, actor) {
+    const range = skill.range ? `射程 ${skill.range}` : skill.targetless ? "无目标" : "选择目标";
+    const cost = skill.passive ? `被动${skill.cost ? ` / ${skill.cost}EN` : ""}` : `${skill.cost ?? 0}EN`;
+    return `
+      <span class="skill-tooltip info-tooltip">
+        <span class="tooltip-title">${this.escape(skill.name)}</span>
+        <span class="tooltip-sub">${this.escape(actor.name)} / ${cost} / ${range}</span>
+        <span class="tooltip-sub">${this.escape(skill.text ?? "")}</span>
+      </span>
+    `;
+  }
+
+  renderReasonTooltip(reason) {
+    if (!reason) return "";
+    return `
+      <span class="reason-tooltip info-tooltip">
+        <span class="tooltip-title">不可用</span>
+        <span class="tooltip-sub">${this.escape(reason)}</span>
+      </span>
+    `;
+  }
+
+  renderCardTooltip(type, count) {
+    const skill = type.skill
+      ? `${this.escape(type.skill.name)} / ${type.skill.passive ? `被动${type.skill.cost ? ` / ${type.skill.cost}EN` : ""}` : `${type.skill.cost ?? 0}EN`}：${this.escape(type.skill.text ?? "")}`
+      : "无技能";
+    return `
+      <span class="card-tooltip info-tooltip">
+        <span class="tooltip-title">${this.escape(type.name)} x${count}</span>
+        <span class="tooltip-sub">${this.escape(type.role)}</span>
+        <span class="tooltip-sub">费用 ${type.cost} / 攻击 ${type.attack} / HP ${type.hp} / EN ${type.energy} / 移动 ${type.moveRange}</span>
+        <span class="tooltip-sub">${skill}</span>
+      </span>
+    `;
+  }
+
   renderCardHpPips(type) {
     return `
       <div class="hp-pips unit" style="--hp-max:${type.hp}" aria-label="HP ${type.hp}/${type.hp}">
@@ -429,17 +517,29 @@ export class TacticalView {
   }
 
   renderEffects() {
-    return this.effectEvents.map((event) => `
-      <div class="attack-effect ${event.kind} ${event.directional ? "directional" : ""}" style="${this.effectStyle(event)}">
-        <span></span><span></span><span></span><span></span>
-      </div>
-    `).join("");
+    return this.effectEvents.map((event) => {
+      if (event.kind === "explosion") {
+        return `<div class="explosion-flare ${event.side}" style="${this.effectStyle(event)}--flare-size:${event.flareSize ?? 0.36};--spark-delay:${event.sparkDelay ?? 0}ms;"></div>`;
+      }
+      if (event.kind === "deploy") {
+        return `
+          <div class="deploy-effect ${event.side}" style="${this.effectStyle(event)}">
+            <span></span><span></span><span></span><span></span>
+          </div>
+        `;
+      }
+      return `
+        <div class="attack-effect ${event.kind} ${event.directional ? "directional" : ""}" style="${this.effectStyle(event)}">
+          <span></span><span></span><span></span><span></span>
+        </div>
+      `;
+    }).join("");
   }
 
   renderFloatingNumbers() {
     return this.damageEvents.map((event) => `
       <div class="floating-number ${event.kind}" style="${this.animationStyle(event)}">
-        ${event.kind === "heal" ? "+" : "-"}${event.amount}
+        ${event.kind === "damage" ? "-" : "+"}${event.amount}
       </div>
     `).join("");
   }
@@ -453,7 +553,9 @@ export class TacticalView {
   }
 
   cellCenterStyle(cell) {
-    return `left: calc(${cell.x} * (var(--cell) + 1px) + var(--cell) * 0.5); top: calc(${cell.y} * (var(--cell) + 1px) + var(--cell) * 0.5);`;
+    const offsetX = 0.5 + (cell.offsetX ?? 0);
+    const offsetY = 0.5 + (cell.offsetY ?? 0);
+    return `left: calc(${cell.x} * (var(--cell) + 1px) + var(--cell) * ${offsetX}); top: calc(${cell.y} * (var(--cell) + 1px) + var(--cell) * ${offsetY});`;
   }
 
   renderHandDock() {
@@ -465,7 +567,7 @@ export class TacticalView {
           <div class="compact-hand">
             ${player.hangar.map((card, index) => this.renderCompactHandCard(card, index)).join("") || `<div class="empty-note">机库为空</div>`}
           </div>
-          <button class="start-button ${this.hasRemainingActions() ? "" : "ready"}" data-action="end-turn" ${this.busy || this.game.state.activeSide !== "player" ? "disabled" : ""}>结束回合</button>
+          ${this.renderEndTurnButton()}
         </section>
       `;
     }
@@ -483,9 +585,10 @@ export class TacticalView {
   renderHandCard(card, index) {
     const type = getUnitType(card.type);
     const selected = this.pendingDeploy?.cardId === card.id;
-    const disabled = card.count <= 0 || this.game.state.activeSide !== "player" || this.busy || !this.game.canAffordDeployment("player", card.type);
+    const disabledReason = this.deploymentDisabledReason(card);
+    const disabled = Boolean(disabledReason);
     return `
-      <button class="hand-card ${selected ? "selected" : ""}" data-hand="${index}" draggable="true" data-card-id="${card.id}" ${disabled ? "disabled" : ""}>
+      <button class="hand-card ${selected ? "selected" : ""} ${disabled ? "is-disabled" : ""}" data-hand="${index}" draggable="${disabled ? "false" : "true"}" data-card-id="${card.id}" ${disabled ? `aria-disabled="true" data-disabled="true"` : ""}>
         <span class="card-stat attack">${type.attack}</span>
         <b class="card-cost">${type.cost}E</b>
         <b class="card-count">x${card.count}</b>
@@ -495,7 +598,9 @@ export class TacticalView {
           ${this.renderCardHpPips(type)}
           ${this.renderCardEnergyPips(type)}
         </span>
-        <span class="card-skill">${type.skill ? `${type.skill.name}${type.skill.passive ? " / 被动" : ` · ${type.skill.cost}E`}` : "无技能"}</span>
+        <span class="card-skill">${type.skill ? `${type.skill.name}${type.skill.passive ? ` / 被动${type.skill.cost ? ` · ${type.skill.cost}E` : ""}` : ` · ${type.skill.cost}E`}` : "无技能"}</span>
+        ${this.renderCardTooltip(type, card.count)}
+        ${this.renderReasonTooltip(disabledReason)}
       </button>
     `;
   }
@@ -503,12 +608,28 @@ export class TacticalView {
   renderCompactHandCard(card, index) {
     const type = getUnitType(card.type);
     const selected = this.pendingDeploy?.cardId === card.id;
-    const disabled = card.count <= 0 || this.game.state.activeSide !== "player" || this.busy || !this.game.canAffordDeployment("player", card.type);
+    const disabledReason = this.deploymentDisabledReason(card);
+    const disabled = Boolean(disabledReason);
     return `
-      <button class="compact-card ${selected ? "selected" : ""}" data-hand="${index}" draggable="true" data-card-id="${card.id}" ${disabled ? "disabled" : ""}>
+      <button class="compact-card ${selected ? "selected" : ""} ${disabled ? "is-disabled" : ""}" data-hand="${index}" draggable="${disabled ? "false" : "true"}" data-card-id="${card.id}" ${disabled ? `aria-disabled="true" data-disabled="true"` : ""}>
         <span>${type.name}</span><b>${type.cost}E</b><i>x${card.count}</i>
+        ${this.renderCardTooltip(type, card.count)}
+        ${this.renderReasonTooltip(disabledReason)}
       </button>
     `;
+  }
+
+  deploymentDisabledReason(card) {
+    if (!card || card.count <= 0) return "机库库存已用尽。";
+    if (this.busy) return "AI行动中，暂时不能部署。";
+    if (this.game.state.activeSide !== "player") return "当前不是玩家回合。";
+    if (!this.game.canAffordDeployment("player", card.type)) {
+      const type = getUnitType(card.type);
+      return `母舰EN不足，需要 ${type.cost}EN。`;
+    }
+    const hasCell = this.game.getDeploymentCells("player").some((cell) => this.game.canDeployAt("player", cell.x, cell.y));
+    if (!hasCell) return "母舰周围没有可部署空位。";
+    return "";
   }
 
   renderActionPanel() {
@@ -518,22 +639,32 @@ export class TacticalView {
         <div class="action-panel">
           <div class="panel-title">操作 <small>${this.busy ? "AI行动中" : "等待选择"}</small></div>
           <div class="action-empty">选择玩家单位或母舰。部署会消耗母舰能量，不限制次数。</div>
-          <button class="start-button ${this.hasRemainingActions() ? "" : "ready"}" data-action="end-turn" ${this.busy || this.game.state.activeSide !== "player" ? "disabled" : ""}>结束回合</button>
+          ${this.renderEndTurnButton()}
         </div>
       `;
     }
 
     const skills = this.game.getSkills(actor).filter((skill) => !skill.passive);
     const passiveSkill = this.game.getSkills(actor).find((skill) => skill.passive);
-    const moveCount = actor.moved ? 0 : this.game.getReachableCells(actor).length;
+    const canMove = !actor.moved && this.game.getReachableCells(actor).length > 0;
+    const moveRange = this.game.getMoveRange(actor);
     const attackCount = actor.acted ? 0 : this.game.getBasicAttackTargets(actor).length;
     const skillButtons = skills.map((skill) => {
       const targetCount = skill.targetless ? 1 : this.game.getSkillTargets(actor, skill.id).length;
-      const disabled = !this.game.canUseSkill(actor, skill.id) || (!skill.targetless && targetCount === 0);
+      const disabledReason = this.skillDisabledReason(actor, skill, targetCount);
+      const disabled = Boolean(disabledReason);
       const active = this.selectedAction === "skill" && this.selectedSkillId === skill.id;
       const action = skill.targetless ? "use-skill" : "select-skill";
-      return `<button class="${active ? "active" : ""}" data-action="${action}" data-skill="${skill.id}" ${disabled ? "disabled" : ""}>${skill.name} ${skill.cost ? `${skill.cost}E` : ""}</button>`;
+      return `
+        <button class="skill-button ${active ? "active" : ""} ${disabled ? "is-disabled" : ""}" data-action="${action}" data-skill="${skill.id}" ${disabled ? `aria-disabled="true" data-disabled="true"` : ""}>
+          <span>${skill.name} ${skill.cost ? `${skill.cost}E` : ""}</span>
+          ${this.renderSkillTooltip(skill, actor)}
+          ${this.renderReasonTooltip(disabledReason)}
+        </button>
+      `;
     }).join("");
+    const moveDisabledReason = this.moveDisabledReason(actor, canMove);
+    const attackDisabledReason = this.attackDisabledReason(actor, attackCount);
 
     return `
       <div class="action-panel">
@@ -545,14 +676,31 @@ export class TacticalView {
         </div>
         <div class="selected-energy">${this.renderEnergyPips(actor)}</div>
         <div class="action-buttons">
-          <button class="${this.selectedAction === "move" ? "active" : ""}" data-action="select-move" ${moveCount ? "" : "disabled"}>移动 ${moveCount}</button>
-          <button class="${this.selectedAction === "attack" ? "active" : ""}" data-action="select-attack" ${attackCount ? "" : "disabled"}>普攻 ${attackCount}</button>
-          ${skillButtons || `<button disabled>无技能</button>`}
+          <button class="action-button ${this.selectedAction === "move" ? "active" : ""} ${moveDisabledReason ? "is-disabled" : ""}" data-action="select-move" ${moveDisabledReason ? `aria-disabled="true" data-disabled="true"` : ""}>移动 ${moveRange}格${this.renderReasonTooltip(moveDisabledReason)}</button>
+          <button class="action-button ${this.selectedAction === "attack" ? "active" : ""} ${attackDisabledReason ? "is-disabled" : ""}" data-action="select-attack" ${attackDisabledReason ? `aria-disabled="true" data-disabled="true"` : ""}>普攻 ${attackCount}${this.renderReasonTooltip(attackDisabledReason)}</button>
+          ${skillButtons || `<button class="action-button is-disabled" aria-disabled="true" data-disabled="true">无技能${this.renderReasonTooltip("该单位没有主动技能。")}</button>`}
         </div>
         <div class="action-desc">${this.actionDescription(actor, this.selectedSkill(actor) ?? passiveSkill)}</div>
-        <button class="start-button ${this.hasRemainingActions() ? "" : "ready"}" data-action="end-turn" ${this.busy || this.game.state.activeSide !== "player" ? "disabled" : ""}>结束回合</button>
+        ${this.renderEndTurnButton()}
       </div>
     `;
+  }
+
+  renderEndTurnButton() {
+    const reason = this.endTurnDisabledReason();
+    return `
+      <button class="start-button ${this.hasRemainingActions() ? "" : "ready"} ${reason ? "is-disabled" : ""}" data-action="end-turn" ${reason ? `aria-disabled="true" data-disabled="true"` : ""}>
+        <span>结束回合</span>
+        ${this.renderReasonTooltip(reason)}
+      </button>
+    `;
+  }
+
+  endTurnDisabledReason() {
+    if (this.busy) return "AI行动中，暂时不能结束回合。";
+    if (this.game.state.activeSide !== "player") return "当前不是玩家回合。";
+    if (this.game.state.winner) return "战斗已经结束。";
+    return "";
   }
 
   actionDescription(actor, skill) {
@@ -561,6 +709,32 @@ export class TacticalView {
     if (!skill) return "该单位没有特殊技能。";
     if ((actor.energy ?? 0) < skill.cost) return `${skill.name} 需要 ${skill.cost} 能量。`;
     return skill.text;
+  }
+
+  moveDisabledReason(actor, canMove) {
+    if (this.busy) return "AI行动中。";
+    if (!this.game.canControlActor(actor, "player")) return "该单位当前不能行动。";
+    if (actor.moved) return "本回合已移动过。";
+    if (!canMove) return "没有可移动到的格子。";
+    return "";
+  }
+
+  attackDisabledReason(actor, attackCount) {
+    if (this.busy) return "AI行动中。";
+    if (!this.game.canControlActor(actor, "player")) return "该单位当前不能行动。";
+    if (actor.acted) return "本回合已攻击或使用过行动技能。";
+    if (attackCount <= 0) return "没有相邻敌方目标。";
+    return "";
+  }
+
+  skillDisabledReason(actor, skill, targetCount) {
+    if (this.busy) return "AI行动中。";
+    if (!this.game.canControlActor(actor, "player")) return "该单位当前不能行动。";
+    if (skill.endsAction !== false && actor.acted) return "本回合已攻击或使用过行动技能。";
+    if ((actor.energy ?? 0) < (skill.cost ?? 0)) return `EN不足，需要 ${skill.cost ?? 0}EN。`;
+    if (!skill.targetless && targetCount <= 0) return "没有合法目标。";
+    if (!this.game.canUseSkill(actor, skill.id)) return "当前条件不满足。";
+    return "";
   }
 
   renderLog() {
@@ -584,6 +758,10 @@ export class TacticalView {
           <div class="settings-head">
             <h2>设置</h2>
             <button data-action="close-settings">关闭</button>
+          </div>
+          <div class="settings-row">
+            <span>&#20027;&#33756;&#21333;</span>
+            <button data-action="go-home">&#36820;&#22238;&#20027;&#39029;</button>
           </div>
           <div class="settings-row">
             <span>棋盘坐标</span>
@@ -651,8 +829,20 @@ export class TacticalView {
     });
 
     this.root.querySelectorAll("[data-hand]").forEach((button) => {
+      button.addEventListener("pointerenter", () => {
+        window.clearTimeout(this.tooltipTimer);
+        this.tooltipTimer = window.setTimeout(() => button.classList.add("tooltip-open"), 600);
+      });
+      button.addEventListener("pointerleave", () => {
+        window.clearTimeout(this.tooltipTimer);
+        button.classList.remove("tooltip-open");
+      });
       button.addEventListener("click", () => this.handleHandClick(Number(button.dataset.hand)));
       button.addEventListener("dragstart", (event) => {
+        if (button.dataset.disabled === "true") {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData("text/plain", `card:${button.dataset.cardId}`);
         event.dataTransfer.effectAllowed = "copy";
       });
@@ -772,6 +962,7 @@ export class TacticalView {
   }
 
   handleAction(action, dataset = {}) {
+    if (dataset.disabled === "true") return;
     if (action === "open-settings") {
       this.settingsOpen = true;
       this.render();
@@ -780,6 +971,10 @@ export class TacticalView {
     if (action === "close-settings") {
       this.settingsOpen = false;
       this.render();
+      return;
+    }
+    if (action === "go-home") {
+      this.onHome?.();
       return;
     }
     if (action === "toggle-theme") {
@@ -804,6 +999,18 @@ export class TacticalView {
       this.handCollapsed = !this.handCollapsed;
       this.saveBool("seed-tactics-hand-collapsed", this.handCollapsed);
       this.render();
+      return;
+    }
+    if (action === "zoom-in") {
+      this.zoomViewport(1.16);
+      return;
+    }
+    if (action === "zoom-out") {
+      this.zoomViewport(0.86);
+      return;
+    }
+    if (action === "reset-view") {
+      this.resetCamera();
       return;
     }
     if (action === "restart") {
@@ -858,20 +1065,44 @@ export class TacticalView {
     const actor = this.getSelectedActor();
     if (!actor || !this.game.canControlActor(actor, "player")) return [];
     if (this.selectedAction === "move" && !actor.moved) {
-      return this.game.getReachableCells(actor).map((cell) => ({ ...cell, kind: "move" }));
+      return this.game.getReachableCells(actor).map((cell) => ({
+        ...cell,
+        kind: "move",
+        danger: this.isCellThreatened(cell, actor.side)
+      }));
     }
     if (this.selectedAction === "attack" && !actor.acted) {
-      return this.game.getBasicAttackTargets(actor).map((ref) => ({ ...ref, ref, kind: "attack" }));
+      return this.game.getBasicAttackTargets(actor).map((ref) => ({
+        ...ref,
+        ref,
+        kind: "attack",
+        lethal: this.isLethalTarget(actor, ref, actor.attack)
+      }));
     }
     if (this.selectedAction === "skill" && this.selectedSkillId && this.game.canUseSkill(actor, this.selectedSkillId)) {
       const skill = this.selectedSkill(actor);
       return this.game.getSkillTargets(actor, this.selectedSkillId).map((ref) => ({
         ...ref,
         ref,
-        kind: skill.id === "salvo" ? "area" : skill.id === "positron" ? "ray" : "skill"
+        kind: skill.id === "salvo" ? "area" : skill.id === "positron" ? "ray" : "skill",
+        lethal: skill.damage ? this.isLethalTarget(actor, ref, skill.damage) : false
       }));
     }
     return [];
+  }
+
+  isLethalTarget(actor, ref, damage) {
+    const target = this.game.resolveTarget(ref);
+    return Boolean(target && target.side !== actor.side && target.hp <= damage);
+  }
+
+  isCellThreatened(cell, side) {
+    const enemies = [this.game.state.cores[side === "player" ? "enemy" : "player"], ...this.game.unitsFor(side === "player" ? "enemy" : "player")];
+    return enemies.some((enemy) => {
+      if (Math.abs(enemy.x - cell.x) + Math.abs(enemy.y - cell.y) <= 1) return true;
+      const skill = this.game.getSkills(enemy).find((item) => !item.passive);
+      return Boolean(skill && (enemy.energy ?? 0) >= (skill.cost ?? 0) && skill.range && Math.abs(enemy.x - cell.x) + Math.abs(enemy.y - cell.y) <= skill.range);
+    });
   }
 
   getSelectedActor() {
@@ -896,7 +1127,10 @@ export class TacticalView {
 
   handleViewportWheel(event) {
     event.preventDefault();
-    const factor = event.deltaY > 0 ? 0.9 : 1.12;
+    this.zoomViewport(event.deltaY > 0 ? 0.9 : 1.12);
+  }
+
+  zoomViewport(factor) {
     this.viewportScale = Math.min(2.8, Math.max(0.62, this.viewportScale * factor));
     this.triggerZoomEase();
     this.updateStageTransform();

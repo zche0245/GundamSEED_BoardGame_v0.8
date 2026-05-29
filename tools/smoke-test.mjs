@@ -1,4 +1,4 @@
-import { BattleGame, BOARD, POINT_ROWS } from "../src/core/battle.js";
+import { BattleGame, BOARD, OBSTACLE_PRESETS, POINT_ROWS } from "../src/core/battle.js";
 import { planAI } from "../src/core/ai.js";
 import { HANGAR_LOADOUT, getUnitType } from "../src/data/units.js";
 
@@ -23,6 +23,10 @@ assert(getUnitType("strike").hp === 3, "Strike should have 3 HP");
 assert(getUnitType("strike").energy === 3, "Strike should have 3 max energy");
 assert(getUnitType("strike").skill.name === "光束军刀", "Strike skill should be renamed to 光束军刀");
 assert(getUnitType("justice").hp === 4, "Justice should have 4 HP");
+assert(getUnitType("freedom").regen === 1, "Freedom should regenerate 1 energy per turn");
+assert(getUnitType("freedom").skill.cost === 3, "Freedom salvo should cost 3 energy");
+assert(getUnitType("justice").energy === 4, "Justice should have 4 max energy");
+assert(getUnitType("justice").regen === 1, "Justice should regenerate 1 energy per turn");
 assert(getUnitType("justice").skill.passive, "Justice skill should be passive");
 assert(game.state.phase === "player", "initial phase should be player turn");
 assert(game.state.factions.player.hangar.length === 5, "player hangar should stack by unit type");
@@ -42,7 +46,19 @@ assert(game.state.energyZones.every((zone) =>
 assert(game.state.obstacles.length === BOARD.obstacleCount, "should generate configured obstacles");
 assert(hasAdjacentObstacle(game.state.obstacles), "obstacles should usually form clustered pairs");
 assert(game.state.cores.player.attack === 1, "player core should have basic attack");
-assert(game.state.cores.player.energy === game.effectiveMaxEnergy(game.state.cores.player), "core should start with full energy");
+assert(game.state.cores.player.energy === 2, "core should start with 2 energy");
+
+const normalGame = new BattleGame({ random: () => 0.25, difficulty: "normal", obstacleCount: OBSTACLE_PRESETS.light.count });
+assert(normalGame.state.cores.enemy.energy === 4, "normal difficulty should start enemy core at 4 energy");
+assert(normalGame.state.factions.enemy.score === 3, "normal difficulty should grant enemy 3 starting score");
+assert(normalGame.state.strategicPoints.every((point) => [4, 5, 6].includes(point.y)), "normal difficulty should move points one row toward the enemy");
+assert(normalGame.state.obstacles.length === OBSTACLE_PRESETS.light.count, "custom light obstacle preset should control obstacle count");
+
+const hardGame = new BattleGame({ random: () => 0.25, difficulty: "hard", obstacleCount: OBSTACLE_PRESETS.heavy.count });
+assert(hardGame.state.cores.enemy.energy === 5, "hard difficulty should start enemy core at 5 energy");
+assert(hardGame.state.factions.enemy.score === 6, "hard difficulty should grant enemy 6 starting score");
+assert(hardGame.state.strategicPoints.every((point) => [3, 4, 5].includes(point.y)), "hard difficulty should move points two rows toward the enemy");
+assert(hardGame.state.obstacles.length === OBSTACLE_PRESETS.heavy.count, "custom heavy obstacle preset should control obstacle count");
 assert(game.getSkills(game.state.cores.player).find((skill) => skill.id === "positron").range === 4, "core positron cannon should have range 4");
 assert(game.getSkills(game.state.cores.player).some((skill) => skill.id === "overload"), "core should expose overload");
 
@@ -85,6 +101,7 @@ assert(duel.effectiveMaxEnergy(strike) === strike.baseEnergy, "damaged units sho
 assert(duel.getReachableCells(strike).some((cell) => cell.x === 7 && cell.y === 5), "normal units should move up to 2 cells");
 assert(duel.basicAttack("p-strike", duel.targetRef(duel.getUnit("e-dagger")), "player"), "manual basic attack should work");
 assert(!duel.getUnit("e-dagger"), "basic attack should remove defeated units");
+assert(duel.state.factions.player.score === getUnitType("dagger").energy, "destroying a unit should grant score equal to its max energy");
 
 const coreSkillGame = new BattleGame({ random: () => 0.4 });
 coreSkillGame.state.obstacles = [];
@@ -134,6 +151,7 @@ assert(freedomGame.useSkill("p-freedom", { x: 6, y: 4 }, "player", "salvo"), "Fr
 assert(freedomGame.getUnit("e-strike").hp === 1, "Freedom should damage units in the directional area");
 assert(!freedomGame.getUnit("e-ginn"), "Freedom should destroy low HP units in the area");
 assert(freedomGame.getUnit("p-strike").hp === 1, "Freedom area fire should still allow friendly fire");
+assert(freedomGame.state.factions.player.score === getUnitType("ginn").energy, "Freedom kills should grant unit energy as score");
 
 const emptySalvoGame = new BattleGame({ random: () => 0.4 });
 emptySalvoGame.state.obstacles = [];
@@ -151,7 +169,14 @@ assert(justice.attack === 2, "Justice should use 2 attack");
 assert(justiceGame.getReachableCells(justice).some((cell) => cell.x === 8 && cell.y === 5), "Justice should move up to 3 cells");
 assert(justiceGame.basicAttack("p-justice", justiceGame.targetRef(justiceGame.getUnit("e-dagger")), "player"), "Justice should kill with basic attack");
 assert(!justiceGame.getUnit("e-dagger"), "Justice should kill a 1 HP target");
-assert(!justice.moved && !justice.acted && justice.justiceChainUsed, "Justice should gain one extra move and attack after a kill");
+assert(justiceGame.state.factions.player.score === getUnitType("dagger").energy, "Justice kill should grant Dagger energy as score");
+assert(!justice.moved && !justice.acted && justice.energy === 3, "Justice should spend 1 energy to gain another move and attack after a kill");
+
+justiceGame.state.units.push(makeUnit("e-ginn", "ginn", "enemy", 6, 5, { hp: 1 }));
+assert(justiceGame.basicAttack("p-justice", justiceGame.targetRef(justiceGame.getUnit("e-ginn")), "player"), "Justice chain should be repeatable while energy remains");
+assert(!justiceGame.getUnit("e-ginn"), "Justice should kill the second target");
+assert(justiceGame.state.factions.player.score === getUnitType("dagger").energy + getUnitType("ginn").energy, "repeat Justice kills should keep adding score");
+assert(!justice.moved && !justice.acted && justice.energy === 2, "Justice should spend energy for each repeated chain trigger");
 
 const aiGame = new BattleGame({ random: () => 0.25 });
 assert(aiGame.endTurn("player"), "player should end turn");
